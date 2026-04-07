@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { parseFileContent } from "@/lib/parseTransactions";
 import { computeTransactionInsights } from "@/lib/transactionInsights";
+import { shrinkTransactionsForChat, trimChatHistory } from "@/lib/chatContext";
 import {
   PieChart as RePieChart, Pie, Cell, BarChart, Bar,
   XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, CartesianGrid
@@ -108,13 +109,15 @@ export default function Home() {
     setIsLoadingQA(true);
 
     try {
+      const { stats, sample } = shrinkTransactionsForChat(activeFile.data, 16);
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: msg.content,
-          history: chatMessages,
-          context: activeFile.data.slice(0, 150),
+          history: trimChatHistory(chatMessages, 5, 280),
+          summary: stats,
+          sample,
         }),
       });
       const data = await res.json();
@@ -603,7 +606,7 @@ export default function Home() {
                 <div>
                   <h3 style={{ margin: 0 }}>AI Financial Copilot</h3>
                   <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                    Groq (Llama 3.1 instant) · Querying: {activeFile ? activeFile.name : "No file selected"}
+                    Secure AI copilot · {activeFile ? activeFile.name : "No file selected"}
                   </p>
                 </div>
               </div>

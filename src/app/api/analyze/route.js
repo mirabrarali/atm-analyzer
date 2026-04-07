@@ -2,8 +2,11 @@ import Groq from 'groq-sdk';
 
 export const dynamic = 'force-dynamic';
 
-/** Groq: llama3-8b-8192 was retired; use current production IDs. */
 const MODEL_ANALYZE = 'llama-3.3-70b-versatile';
+
+function getApiKey() {
+  return process.env.ATM_AI_API_KEY || process.env.GROQ_API_KEY;
+}
 
 function aggregateTransactions(rows) {
   const list = Array.isArray(rows) ? rows : [];
@@ -33,14 +36,15 @@ export async function POST(request) {
     const body = await request.json();
     const { data, fileName } = body;
 
-    if (!process.env.GROQ_API_KEY) {
+    const apiKey = getApiKey();
+    if (!apiKey) {
       return Response.json(
-        { error: 'GROQ_API_KEY not configured.' },
+        { error: 'AI inference API key is not configured on the server.' },
         { status: 500 }
       );
     }
 
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    const client = new Groq({ apiKey });
     const stats = aggregateTransactions(data);
     const sample = Array.isArray(data) ? data.slice(0, 120) : [];
 
@@ -71,7 +75,7 @@ RULES:
 - deepDiveNotes and keyFindings must add interpretation beyond raw counts (e.g. concentration risk, failure clusters, amount distribution implications).
 - Be precise with numbers.`;
 
-    const chatCompletion = await groq.chat.completions.create({
+    const chatCompletion = await client.chat.completions.create({
       messages: [
         { role: 'system', content: systemPrompt },
         {
