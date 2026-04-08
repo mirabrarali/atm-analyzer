@@ -1,13 +1,20 @@
-import Groq from 'groq-sdk';
 import { shrinkTransactionsForChat, trimChatHistory } from '@/lib/chatContext';
+import { getGeminiClient, getChatModelId } from '@/lib/gemini';
 
 export const dynamic = 'force-dynamic';
 
-const CHAT_MODEL = 'llama-3.1-8b-instant';
 const MAX_MESSAGE_CHARS = 1800;
 
-function getApiKey() {
-  return process.env.ATM_AI_API_KEY || process.env.GROQ_API_KEY;
+const SYSTEM_PROMPT =
+  'You are a senior bank ATM operations analyst. Answer ONLY using the JSON block the user provides (keys st = stats, ex = example rows; each row may include c = ISO currency). All amounts use the ISO currency in the data (cc in st or c per row). Be concise; short bullets when listing. If data is empty, say so. Never invent transactions.';
+
+function toGeminiHistory(history) {
+  const list = (history || []).map((m) => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: String(m.content || '').slice(0, 4000) }],
+  }));
+  while (list.length && list[0].role !== 'user') list.shift();
+  return list;
 }
 
 export async function POST(request) {
@@ -15,12 +22,12 @@ export async function POST(request) {
     const body = await request.json();
     const { message, history, context, summary, sample } = body;
 
-    const apiKey = getApiKey();
-    if (!apiKey) {
+    const genAI = getGeminiClient();
+    if (!genAI) {
       return Response.json(
         {
           reply:
-            'The AI service is not configured. Add your inference API key to the server environment (for example in .env.local) and restart the application.',
+            'GEMINI_API_KEY is not configured. Add it in your server environment (Vercel or .env.local) and redeploy.',
         },
         { status: 200 }
       );
@@ -35,48 +42,48 @@ export async function POST(request) {
     let samplePayload;
     if (summary && Array.isArray(sample)) {
       statsPayload = summary;
-      samplePayload = sample.slice(0, 18);
+      samplePayload = sample.slice(0, 24);
     } else {
-      const shrunk = shrinkTransactionsForChat(context, 16);
+      const shrunk = shrinkTransactionsForChat(context, 20);
       statsPayload = shrunk.stats;
       samplePayload = shrunk.sample;
     }
 
-    const compactHistory = trimChatHistory(history, 5, 280);
+    const compactHistory = trimChatHistory(history, 8, 400);
 
     const dataBlock = JSON.stringify({ st: statsPayload, ex: samplePayload });
-
-    const systemPrompt =
-      'You are a senior bank ATM operations analyst. Answer ONLY using the JSON block STATS+EXAMPLES the user provides (keys st, ex; each sample may include c=ISO currency). All monetary amounts use the ISO currency in the data (field cc in st or c per row). Be concise; use short bullets when listing items. If data is missing, say so. Never invent transaction rows.';
-
     const userContent = `DATA:${dataBlock}\n\nQUESTION:${userMsg}`;
 
-    const client = new Groq({ apiKey });
-
-    const chatCompletion = await client.chat.completions.create({
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...compactHistory.map((msg) => ({ role: msg.role, content: msg.content })),
-        { role: 'user', content: userContent },
-      ],
-      model: CHAT_MODEL,
-      temperature: 0.15,
-      max_tokens: 512,
-      top_p: 1,
-      stream: false,
+    const model = genAI.getGenerativeModel({
+      model: getChatModelId(),
+      systemInstruction: SYSTEM_PROMPT,
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 2048,
+      },
     });
 
-    const reply =
-      chatCompletion.choices[0]?.message?.content ||
-      "I couldn't generate a response. Please try again.";
+    const prior = toGeminiHistory(compactHistory);
+    let reply;
 
-    return Response.json({ reply });
+    if (prior.length === 0) {
+      const result = await model.generateContent(userContent);
+      reply = result.response.text();
+    } else {
+      const chat = model.startChat({ history: prior });
+      const result = await chat.sendMessage(userContent);
+      reply = result.response.text();
+    }
+
+    return Response.json({
+      reply: reply || "I couldn't generate a response. Please try again.",
+    });
   } catch (error) {
     const raw = error?.message || String(error);
-    if (/413|rate_limit|TPM|tokens per minute|tokens/i.test(raw)) {
+    if (/429|RESOURCE_EXHAUSTED|quota|rate|limit|too many/i.test(raw)) {
       return Response.json({
         reply:
-          'The assistant hit a short-term size limit. Try a briefer question, or clear the chat and ask again with fewer follow-ups.',
+          'The assistant hit an API quota or rate limit. Wait a few seconds and try again, or shorten your question.',
       });
     }
     console.error('Chat API error:', error);

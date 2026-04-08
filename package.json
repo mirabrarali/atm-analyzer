@@ -10,7 +10,7 @@
     "inspect:jrn": "node scripts/inspect-jrn.mjs"
   },
   "dependencies": {
-    "groq-sdk": "^1.1.2",
+    "@google/generative-ai": "^0.24.0",
     "lucide-react": "^1.7.0",
     "next": "16.2.2",
     "papaparse": "^5.5.3",

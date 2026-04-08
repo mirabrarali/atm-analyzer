@@ -1,15 +1,8 @@
-import Groq from 'groq-sdk';
 import { inferMajorityCurrency } from '@/lib/currencyFormat';
 import { compactRowsForAnalysis } from '@/lib/analysisPayload';
+import { getGeminiClient, getAnalyzeModelId } from '@/lib/gemini';
 
 export const dynamic = 'force-dynamic';
-
-/** Prefer 8B when TPM limits are tight; override with ATM_ANALYZE_MODEL if needed. */
-const MODEL_ANALYZE = process.env.ATM_ANALYZE_MODEL || 'llama-3.1-8b-instant';
-
-function getApiKey() {
-  return process.env.ATM_AI_API_KEY || process.env.GROQ_API_KEY;
-}
 
 function aggregateTransactions(rows) {
   const list = Array.isArray(rows) ? rows : [];
@@ -35,29 +28,28 @@ function aggregateTransactions(rows) {
   };
 }
 
-const SYSTEM_PROMPT = `You are a bank ATM data analyst. Reply with ONLY valid JSON (no markdown).
+const SYSTEM_PROMPT = `You are a bank ATM data analyst. Reply with ONLY valid JSON (no markdown, no code fences).
 
 Schema:
 {"summary":"string","totalTransactions":number,"totalVolume":number,"avgTransactionAmount":number,"peakHour":"string or N/A","anomalyCount":number,"anomalyDetails":["string"],"insights":["string"],"deepDiveNotes":["string"],"keyFindings":["string"],"riskLevel":"LOW"|"MEDIUM"|"HIGH","riskExplanation":"string","transactionBreakdown":[{"name":"string","value":number}],"statusBreakdown":[{"name":"string","value":number}],"recommendations":["string"]}
 
-Rules: Copy totalTransactions,totalVolume,avgTransactionAmount,transactionBreakdown,statusBreakdown EXACTLY from serverComputedStats. Use dominantCurrency for money wording (not USD unless that code). Interpret patterns in deepDiveNotes and keyFindings.`;
+Rules: Copy totalTransactions, totalVolume, avgTransactionAmount, transactionBreakdown, statusBreakdown EXACTLY from serverComputedStats. Use dominantCurrency for money wording. deepDiveNotes and keyFindings must add real interpretation (concentration, failures, outliers).`;
 
 export async function POST(request) {
   try {
     const body = await request.json();
     const { data, fileName } = body;
 
-    const apiKey = getApiKey();
-    if (!apiKey) {
+    const genAI = getGeminiClient();
+    if (!genAI) {
       return Response.json(
-        { error: 'AI inference API key is not configured on the server.' },
+        { error: 'GEMINI_API_KEY is not set. Add it in Vercel Environment Variables (or .env.local) and redeploy.' },
         { status: 500 }
       );
     }
 
-    const client = new Groq({ apiKey });
     const stats = aggregateTransactions(data);
-    const compactSample = compactRowsForAnalysis(data, 40);
+    const compactSample = compactRowsForAnalysis(data, 60);
 
     const userPayload = JSON.stringify({
       fn: String(fileName || 'unknown').slice(0, 200),
@@ -65,19 +57,18 @@ export async function POST(request) {
       sampleRowsCompact: compactSample,
     });
 
-    const chatCompletion = await client.chat.completions.create({
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userPayload },
-      ],
-      model: MODEL_ANALYZE,
-      temperature: 0.05,
-      max_tokens: 2048,
-      top_p: 1,
-      stream: false,
+    const model = genAI.getGenerativeModel({
+      model: getAnalyzeModelId(),
+      systemInstruction: SYSTEM_PROMPT,
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 8192,
+        responseMimeType: 'application/json',
+      },
     });
 
-    const raw = chatCompletion.choices[0]?.message?.content || '{}';
+    const result = await model.generateContent(userPayload);
+    const raw = result.response.text() || '{}';
 
     let analysis;
     try {
@@ -99,20 +90,19 @@ export async function POST(request) {
     return Response.json({ analysis });
   } catch (error) {
     const msg = error?.message || String(error);
-    const is413 = /413|rate_limit|TPM|tokens/i.test(msg);
     console.error('Analysis API Error:', error);
-    if (is413) {
+    const isQuota =
+      /429|RESOURCE_EXHAUSTED|quota|rate|limit|too many/i.test(msg) ||
+      error?.status === 429;
+    if (isQuota) {
       return Response.json(
         {
           error:
-            'The analysis request is too large for the current AI quota. Try a shorter file, fewer rows, or wait a minute and retry. The dashboard still shows charts from your data.',
+            'Gemini API quota or rate limit reached. Wait a moment and retry, or check your Google AI Studio billing / limits.',
         },
         { status: 503 }
       );
     }
-    return Response.json(
-      { error: `Analysis failed: ${msg}` },
-      { status: 500 }
-    );
+    return Response.json({ error: `Analysis failed: ${msg}` }, { status: 500 });
   }
 }
