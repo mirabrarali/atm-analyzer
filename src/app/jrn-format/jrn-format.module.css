@@ -1,0 +1,118 @@
+.wrap {
+  margin-top: 52px;
+  min-height: calc(100vh - 52px);
+  padding: 2rem clamp(1rem, 4vw, 3rem) 4rem;
+  max-width: 900px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.lead {
+  font-size: 1.15rem;
+  color: var(--foreground);
+  line-height: 1.7;
+  margin-bottom: 1.5rem;
+}
+
+.box {
+  background: rgba(23, 25, 35, 0.65);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1.25rem 1.5rem;
+  margin: 1.25rem 0;
+}
+
+.box h3 {
+  margin-top: 0;
+  font-size: 1rem;
+  color: var(--primary);
+}
+
+.list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+  color: var(--text-muted);
+  line-height: 1.65;
+}
+
+.textarea {
+  width: 100%;
+  min-height: 180px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.stat {
+  padding: 0.75rem;
+  background: var(--surface-secondary);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.statLabel {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+.statValue {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-top: 0.25rem;
+}
+
+.tableWrap {
+  overflow-x: auto;
+  margin-top: 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.table th,
+.table td {
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.table th {
+  background: var(--surface-secondary);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.table tr:hover td {
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.note {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-top: 1rem;
+  line-height: 1.55;
+}

@@ -2,7 +2,23 @@
  * Derives chart-ready aggregates and narrative bullets from normalized transaction rows.
  */
 
-const BAD_STATUSES = new Set(["FAILED", "REJECTED", "REVERSAL", "ERROR", "TIMEOUT", "DENIED", "DECLINED"]);
+import { formatMoneyAmount, inferMajorityCurrency } from "./currencyFormat";
+
+const BAD_STATUSES = new Set([
+  "FAILED",
+  "REJECTED",
+  "REVERSAL",
+  "ERROR",
+  "TIMEOUT",
+  "DENIED",
+  "DECLINED",
+]);
+
+function displayType(t) {
+  return String(t || "UNKNOWN")
+    .trim()
+    .replace(/_/g, " ");
+}
 
 function mergeSmallSlices(items, maxSlices = 8, otherLabel = "Other") {
   if (!items?.length) return [];
@@ -16,6 +32,9 @@ function mergeSmallSlices(items, maxSlices = 8, otherLabel = "Other") {
 
 export function computeTransactionInsights(rows) {
   if (!rows?.length) return null;
+
+  const displayCurrency = inferMajorityCurrency(rows);
+  const fmt = (n) => formatMoneyAmount(n, displayCurrency);
 
   const typeCount = {};
   const statusCount = {};
@@ -35,7 +54,7 @@ export function computeTransactionInsights(rows) {
   const meanAmt = rows.length ? totalVolume / rows.length : 0;
 
   for (const tx of rows) {
-    const t = String(tx.type || "UNKNOWN").trim() || "UNKNOWN";
+    const t = displayType(tx.type || "UNKNOWN");
     const s = String(tx.status || "SUCCESS").trim().toUpperCase() || "SUCCESS";
     const amt = Number(tx.amount);
     const safeAmt = Number.isFinite(amt) ? amt : 0;
@@ -91,12 +110,12 @@ export function computeTransactionInsights(rows) {
       : sortedAmt[Math.min(sortedAmt.length - 1, Math.floor(sortedAmt.length * 0.95))];
 
   const bucketDefs = [
-    { name: "$0", test: (a) => a === 0 },
-    { name: "$0.01–20", test: (a) => a > 0 && a <= 20 },
-    { name: "$20–50", test: (a) => a > 20 && a <= 50 },
-    { name: "$50–100", test: (a) => a > 50 && a <= 100 },
-    { name: "$100–500", test: (a) => a > 100 && a <= 500 },
-    { name: "$500+", test: (a) => a > 500 },
+    { name: "0", test: (a) => a === 0 },
+    { name: "0.01–20", test: (a) => a > 0 && a <= 20 },
+    { name: "20–50", test: (a) => a > 20 && a <= 50 },
+    { name: "50–100", test: (a) => a > 50 && a <= 100 },
+    { name: "100–500", test: (a) => a > 100 && a <= 500 },
+    { name: "500+", test: (a) => a > 500 },
   ];
   const amountBuckets = bucketDefs.map((b) => ({
     name: b.name,
@@ -105,32 +124,34 @@ export function computeTransactionInsights(rows) {
 
   const topType = typeData[0];
   const topStatus = statusData[0];
-  const failRate =
-    rows.length > 0
-      ? ((statusCount.FAILED || 0) + (statusCount.REJECTED || 0) + (statusCount.ERROR || 0) + (statusCount.TIMEOUT || 0)) /
-        rows.length
-      : 0;
+  const failCount =
+    (statusCount.FAILED || 0) +
+    (statusCount.REJECTED || 0) +
+    (statusCount.ERROR || 0) +
+    (statusCount.TIMEOUT || 0);
+  const failRate = rows.length > 0 ? failCount / rows.length : 0;
 
   const deepBullets = [
-    `${rows.length.toLocaleString()} rows ingested; total volume $${totalVolume.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`,
+    `${rows.length.toLocaleString()} rows ingested; total volume ${fmt(totalVolume)} (${displayCurrency}).`,
     topType
       ? `Dominant transaction label: ${topType.name} (${topType.value.toLocaleString()} events, ${((topType.value / rows.length) * 100).toFixed(1)}%).`
       : "No type breakdown available.",
     topStatus
       ? `Most common status: ${topStatus.name} (${topStatus.value.toLocaleString()} occurrences).`
       : null,
-    `Median amount $${medianAmount.toFixed(2)} · 95th percentile $${p95.toFixed(2)}.`,
+    `Median ${fmt(medianAmount)} · 95th percentile ${fmt(p95)}.`,
     failRate > 0
-      ? `Failure / reject / error share ≈ ${(failRate * 100).toFixed(2)}% of rows — review flagged samples below if non-trivial.`
+      ? `Non-success status share ≈ ${(failRate * 100).toFixed(2)}% of rows — review flagged samples below if non-trivial.`
       : "No FAILED/REJECTED/ERROR statuses detected in parsed status fields.",
     volumeByTypeData[0]
-      ? `Highest gross volume by type: ${volumeByTypeData[0].name} ($${volumeByTypeData[0].value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}).`
+      ? `Highest gross volume by type: ${volumeByTypeData[0].name} (${fmt(volumeByTypeData[0].value)}).`
       : null,
   ].filter(Boolean);
 
   return {
     totalTx: rows.length,
     totalValue: totalVolume,
+    displayCurrency,
     anomalies: anomalyCount,
     medianAmount,
     p95Amount: p95,

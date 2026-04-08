@@ -1,4 +1,5 @@
 import Groq from 'groq-sdk';
+import { inferMajorityCurrency } from '@/lib/currencyFormat';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,6 +29,7 @@ function aggregateTransactions(rows) {
     avgAmount: Math.round((totalVolume / n) * 100) / 100,
     typeCount,
     statusCount,
+    dominantCurrency: inferMajorityCurrency(list),
   };
 }
 
@@ -72,6 +74,7 @@ The JSON must follow this exact schema:
 
 RULES:
 - The object "serverComputedStats" in the user message is ground truth for row counts, totals, and frequency tables. Your totalTransactions, totalVolume, avgTransactionAmount, transactionBreakdown, and statusBreakdown MUST match serverComputedStats (you may restate them).
+- Monetary fields are in the ISO 4217 currency given by serverComputedStats.dominantCurrency (e.g. OMR, USD). State that currency explicitly in summary and insights when discussing amounts — never assume USD.
 - deepDiveNotes and keyFindings must add interpretation beyond raw counts (e.g. concentration risk, failure clusters, amount distribution implications).
 - Be precise with numbers.`;
 

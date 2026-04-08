@@ -47,7 +47,7 @@ export async function POST(request) {
     const dataBlock = JSON.stringify({ st: statsPayload, ex: samplePayload });
 
     const systemPrompt =
-      'You are a senior bank ATM operations analyst. Answer ONLY using the JSON block STATS+EXAMPLES the user provides (keys st and ex). Be concise; use short bullets when listing items. If data is missing, say so. Never invent transaction rows.';
+      'You are a senior bank ATM operations analyst. Answer ONLY using the JSON block STATS+EXAMPLES the user provides (keys st, ex; each sample may include c=ISO currency). All monetary amounts use the ISO currency in the data (field cc in st or c per row). Be concise; use short bullets when listing items. If data is missing, say so. Never invent transaction rows.';
 
     const userContent = `DATA:${dataBlock}\n\nQUESTION:${userMsg}`;
 

@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "inspect:jrn": "node scripts/inspect-jrn.mjs"
   },
   "dependencies": {
     "groq-sdk": "^1.1.2",

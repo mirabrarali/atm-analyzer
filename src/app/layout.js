@@ -17,6 +17,7 @@ export default function RootLayout({ children }) {
           <nav className="site-top-nav-links">
             <Link href="/">Application</Link>
             <Link href="/about">Product overview</Link>
+            <Link href="/jrn-format">JRN guide</Link>
           </nav>
         </header>
         {children}

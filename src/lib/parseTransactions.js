@@ -1,5 +1,7 @@
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
+import { inferMajorityCurrency } from './currencyFormat';
+import { isWincorMultifunctionJournal, parseWincorJrn } from './wincorJrn';
 
 const DATE_KEYS = [
   'date', 'datetime', 'timestamp', 'time', 'txn_date', 'transactiondate', 'postingdate',
@@ -14,6 +16,7 @@ const AMOUNT_KEYS = [
   'transactionamount', 'tran_amount', 'net_amount',
 ];
 const STATUS_KEYS = ['status', 'result', 'response', 'outcome', 'resp', 'rc', 'responsecode'];
+const CURRENCY_KEYS = ['currency', 'ccy', 'curr', 'transactioncurrency', 'isocurrency', 'iso_currency'];
 
 function normalizeKey(k) {
   return String(k || '')
@@ -67,13 +70,19 @@ function mapTabularRow(row) {
   const typeVal = findValue(row, TYPE_KEYS) ?? row.Type ?? row.type ?? 'UNKNOWN';
   const amountVal = findValue(row, AMOUNT_KEYS) ?? row.Amount ?? row.amount ?? row.Value ?? 0;
   const statusVal = findValue(row, STATUS_KEYS) ?? row.Status ?? row.status ?? 'SUCCESS';
+  const curVal = findValue(row, CURRENCY_KEYS) ?? row.Currency ?? row.currency ?? '';
   const st = String(statusVal || 'SUCCESS').trim().toUpperCase() || 'SUCCESS';
+  const ccy =
+    curVal && String(curVal).trim().length >= 3
+      ? String(curVal).trim().toUpperCase().slice(0, 3)
+      : undefined;
   return {
     id: Math.random().toString(36).substr(2, 9),
     date: dateVal !== undefined && dateVal !== null ? String(dateVal) : '',
     type: String(typeVal || 'UNKNOWN').trim() || 'UNKNOWN',
     amount: parseAmountValue(amountVal),
     status: st,
+    ...(ccy ? { currency: ccy } : {}),
     raw: JSON.stringify(row),
   };
 }
@@ -92,6 +101,13 @@ function parseJrnLine(line) {
   } else {
     const intMatch = line.match(/\b(?:AMT|AMOUNT)[\s:=]+\s*([0-9]+)\b/i);
     if (intMatch) amt = parseFloat(intMatch[1]);
+  }
+
+  let currency;
+  const isoAmt = line.match(/\b([A-Z]{3})\s*([0-9]+(?:\.[0-9]+)?)\b/);
+  if (isoAmt && !['TVR', 'TSI', 'RRN', 'AID', 'EMV'].includes(isoAmt[1])) {
+    currency = isoAmt[1];
+    if (!amt) amt = parseFloat(isoAmt[2]);
   }
 
   const typeMatch = line.match(JRN_TYPES);
@@ -115,6 +131,7 @@ function parseJrnLine(line) {
     type,
     amount: amt,
     status,
+    ...(currency ? { currency } : {}),
     raw: terminal ? `${line} [TERM:${terminal}]` : line,
   };
 }
@@ -136,7 +153,14 @@ export const parseFileContent = (file) => {
           const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
           const rows = XLSX.utils.sheet_to_json(firstSheet);
           const parsed = rows.map((row) => mapTabularRow(row));
-          resolve({ name: file.name, type: 'EXCEL', data: parsed, rawLength: JSON.stringify(rows).length });
+          const fc = inferMajorityCurrency(parsed);
+          resolve({
+            name: file.name,
+            type: 'EXCEL',
+            data: parsed,
+            rawLength: JSON.stringify(rows).length,
+            fileCurrency: fc,
+          });
         } catch (err) {
           reject(err);
         }
@@ -155,14 +179,40 @@ export const parseFileContent = (file) => {
               skipEmptyLines: true,
               complete: (results) => {
                 const parsed = results.data.map((row) => mapTabularRow(row));
-                resolve({ name: file.name, type: 'CSV', data: parsed, rawLength: text.length });
+                const fc = inferMajorityCurrency(parsed);
+                resolve({
+                  name: file.name,
+                  type: 'CSV',
+                  data: parsed,
+                  rawLength: text.length,
+                  fileCurrency: fc,
+                });
               },
               error: reject,
+            });
+          } else if (isWincorMultifunctionJournal(text)) {
+            const parsed = parseWincorJrn(text);
+            const fc = inferMajorityCurrency(parsed);
+            resolve({
+              name: file.name,
+              type: 'JRN (Wincor)',
+              data: parsed,
+              rawText: text,
+              rawLength: text.length,
+              fileCurrency: fc,
             });
           } else {
             const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
             const parsed = lines.map((line) => parseJrnLine(line));
-            resolve({ name: file.name, type: 'JRN/TXT', data: parsed, rawText: text, rawLength: text.length });
+            const fc = inferMajorityCurrency(parsed);
+            resolve({
+              name: file.name,
+              type: 'JRN/TXT',
+              data: parsed,
+              rawText: text,
+              rawLength: text.length,
+              ...(fc && fc !== 'USD' ? { fileCurrency: fc } : {}),
+            });
           }
         } catch (err) {
           reject(err);

@@ -10,6 +10,7 @@ import {
 import { parseFileContent } from "@/lib/parseTransactions";
 import { computeTransactionInsights } from "@/lib/transactionInsights";
 import { shrinkTransactionsForChat, trimChatHistory } from "@/lib/chatContext";
+import { formatMoneyAmount, formatMoneyCompact } from "@/lib/currencyFormat";
 import {
   PieChart as RePieChart, Pie, Cell, BarChart, Bar,
   XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, CartesianGrid
@@ -140,6 +141,9 @@ export default function Home() {
     () => (activeFile?.data ? computeTransactionInsights(activeFile.data) : null),
     [activeFile]
   );
+
+  const displayCurrency =
+    insights?.displayCurrency || activeFile?.fileCurrency || "USD";
 
   const riskColor = {
     LOW: "var(--success)",
@@ -364,7 +368,12 @@ export default function Home() {
                       </div>
                       <div className="kpi-data">
                         <span className="kpi-label">Transaction Volume</span>
-                        <span className="kpi-value">${(aiAnalysis?.totalVolume || insights?.totalValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                        <span className="kpi-value">
+                          {formatMoneyAmount(
+                            aiAnalysis?.totalVolume ?? insights?.totalValue ?? 0,
+                            displayCurrency
+                          )}
+                        </span>
                       </div>
                     </div>
                     <div className="kpi-card">
@@ -382,7 +391,14 @@ export default function Home() {
                       </div>
                       <div className="kpi-data">
                         <span className="kpi-label">Avg. Amount</span>
-                        <span className="kpi-value">${(aiAnalysis?.avgTransactionAmount || (insights?.totalValue / Math.max(insights?.totalTx || 1, 1)) || 0).toFixed(2)}</span>
+                        <span className="kpi-value">
+                          {formatMoneyAmount(
+                            aiAnalysis?.avgTransactionAmount ??
+                              (insights?.totalValue / Math.max(insights?.totalTx || 1, 1)) ??
+                              0,
+                            displayCurrency
+                          )}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -519,14 +535,22 @@ export default function Home() {
 
                   <div className="charts-grid">
                     <div className="glass-panel chart-panel">
-                      <h3>Volume by type (USD)</h3>
+                      <h3>Volume by type ({displayCurrency})</h3>
                       <div style={{ height: "280px" }}>
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={insights?.volumeByTypeData || []} layout="vertical" margin={{ left: 8, right: 16 }}>
                             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal />
-                            <XAxis type="number" stroke="var(--text-muted)" fontSize={11} tickFormatter={(v) => `$${v}`} />
+                            <XAxis
+                              type="number"
+                              stroke="var(--text-muted)"
+                              fontSize={11}
+                              tickFormatter={(v) => formatMoneyCompact(v, displayCurrency)}
+                            />
                             <YAxis type="category" dataKey="name" stroke="var(--text-muted)" fontSize={11} width={100} />
-                            <Tooltip contentStyle={{ background: "var(--surface-primary)", border: "1px solid var(--border)", borderRadius: "8px", color: "var(--foreground)" }} formatter={(v) => [`$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2 })}`, "Volume"]} />
+                            <Tooltip
+                              contentStyle={{ background: "var(--surface-primary)", border: "1px solid var(--border)", borderRadius: "8px", color: "var(--foreground)" }}
+                              formatter={(v) => [formatMoneyAmount(Number(v), displayCurrency), "Volume"]}
+                            />
                             <Bar dataKey="value" radius={[0, 6, 6, 0]} animationDuration={800}>
                               {(insights?.volumeByTypeData || []).map((_, i) => (
                                 <Cell key={i} fill={COLORS[i % COLORS.length]} />
@@ -538,7 +562,7 @@ export default function Home() {
                     </div>
 
                     <div className="glass-panel chart-panel">
-                      <h3>Amount buckets (count of transactions)</h3>
+                      <h3>Amount buckets — counts ({displayCurrency} bands)</h3>
                       <div style={{ height: "280px" }}>
                         <ResponsiveContainer width="100%" height="100%">
                           <AreaChart data={insights?.amountBuckets || []}>
@@ -585,7 +609,8 @@ export default function Home() {
                           <div key={i} className="anomaly-item">
                             <ShieldAlert size={14} color="var(--danger)" />
                             <span>
-                              <strong>{row.type}</strong> · {row.status} · ${Number(row.amount).toFixed(2)}
+                              <strong>{row.type}</strong> · {row.status} ·{" "}
+                              {formatMoneyAmount(Number(row.amount), displayCurrency)}
                               {row.snippet ? ` — ${row.snippet}` : ""}
                             </span>
                           </div>
