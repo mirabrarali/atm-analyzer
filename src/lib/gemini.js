@@ -7,6 +7,9 @@
  * Legacy: GEMINI_ANALYZE_MODEL / GEMINI_CHAT_MODEL still override the primary slot if GEMINI_PRIMARY_MODEL is unset.
  *
  * https://ai.google.dev/gemini-api/docs/models
+ *
+ * Gemma models (e.g. gemma-3-27b-it) do not support systemInstruction / developer
+ * instructions in the API — embed the system text in the user prompt instead.
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -102,18 +105,29 @@ export function buildChatGenerationConfig() {
   };
 }
 
+/** Gemma API models reject systemInstruction with 400 "Developer instruction is not enabled". */
+export function supportsSystemInstruction(modelId) {
+  return !String(modelId).toLowerCase().startsWith('gemma');
+}
+
+function combineSystemAndUser(systemInstruction, userText) {
+  return `${systemInstruction}\n\n${userText}`;
+}
+
 export async function generateContentWithFallback(genAI, { systemInstruction }, userText) {
   const chain = buildTwoModelChain();
   let lastError;
 
   for (const modelId of chain) {
     const generationConfig = buildAnalyzeGenerationConfig(modelId);
+    const useSys = supportsSystemInstruction(modelId);
     const model = genAI.getGenerativeModel({
       model: modelId,
-      systemInstruction,
+      ...(useSys ? { systemInstruction } : {}),
       generationConfig,
     });
-    const attempt = () => model.generateContent(userText);
+    const prompt = useSys ? userText : combineSystemAndUser(systemInstruction, userText);
+    const attempt = () => model.generateContent(prompt);
 
     try {
       const result = await attempt();
@@ -159,7 +173,8 @@ export async function chatWithFallback(genAI, { systemInstruction }, priorHistor
   const generationConfig = buildChatGenerationConfig();
   let lastError;
 
-  const tryModel = async (modelId, useFlat) => {
+  const tryModel = async (modelId) => {
+    const useFlat = !supportsSystemInstruction(modelId);
     if (useFlat) {
       const flat = buildFlatChatPrompt(systemInstruction, priorHistory, userContent);
       const model = genAI.getGenerativeModel({ model: modelId, generationConfig });
@@ -179,7 +194,7 @@ export async function chatWithFallback(genAI, { systemInstruction }, priorHistor
 
   for (const modelId of chain) {
     try {
-      const result = await tryModel(modelId, false);
+      const result = await tryModel(modelId);
       return { result, modelId };
     } catch (e) {
       lastError = e;
@@ -188,24 +203,13 @@ export async function chatWithFallback(genAI, { systemInstruction }, priorHistor
       const wait = parseRetryDelayMs(e);
       if (wait > 0) await sleep(Math.min(wait, 60_000));
       try {
-        const result = await tryModel(modelId, false);
+        const result = await tryModel(modelId);
         return { result, modelId };
       } catch (e2) {
         lastError = e2;
         if (isModelUnavailableError(e2)) continue;
         if (!isGeminiRateLimitError(e2)) throw e2;
       }
-    }
-  }
-
-  for (const modelId of chain) {
-    try {
-      const result = await tryModel(modelId, true);
-      return { result, modelId };
-    } catch (e) {
-      lastError = e;
-      if (isModelUnavailableError(e)) continue;
-      if (!isGeminiRateLimitError(e)) throw e;
     }
   }
 
