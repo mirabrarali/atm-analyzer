@@ -1,6 +1,12 @@
 import { inferMajorityCurrency } from '@/lib/currencyFormat';
 import { compactRowsForAnalysis } from '@/lib/analysisPayload';
-import { getGeminiClient, getAnalyzeModelId } from '@/lib/gemini';
+import {
+  generateContentWithFallback,
+  getGeminiClient,
+  getAnalyzeModelId,
+  isGeminiRateLimitError,
+  formatQuotaErrorMessage,
+} from '@/lib/gemini';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,17 +63,20 @@ export async function POST(request) {
       sampleRowsCompact: compactSample,
     });
 
-    const model = genAI.getGenerativeModel({
-      model: getAnalyzeModelId(),
-      systemInstruction: SYSTEM_PROMPT,
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 8192,
-        responseMimeType: 'application/json',
+    const { result } = await generateContentWithFallback(
+      genAI,
+      {
+        systemInstruction: SYSTEM_PROMPT,
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 8192,
+          responseMimeType: 'application/json',
+        },
+        primaryModelId: getAnalyzeModelId(),
       },
-    });
+      userPayload
+    );
 
-    const result = await model.generateContent(userPayload);
     const raw = result.response.text() || '{}';
 
     let analysis;
@@ -91,17 +100,8 @@ export async function POST(request) {
   } catch (error) {
     const msg = error?.message || String(error);
     console.error('Analysis API Error:', error);
-    const isQuota =
-      /429|RESOURCE_EXHAUSTED|quota|rate|limit|too many/i.test(msg) ||
-      error?.status === 429;
-    if (isQuota) {
-      return Response.json(
-        {
-          error:
-            'Gemini API quota or rate limit reached. Wait a moment and retry, or check your Google AI Studio billing / limits.',
-        },
-        { status: 503 }
-      );
+    if (isGeminiRateLimitError(error)) {
+      return Response.json({ error: formatQuotaErrorMessage() }, { status: 503 });
     }
     return Response.json({ error: `Analysis failed: ${msg}` }, { status: 500 });
   }

@@ -1,5 +1,11 @@
 import { shrinkTransactionsForChat, trimChatHistory } from '@/lib/chatContext';
-import { getGeminiClient, getChatModelId } from '@/lib/gemini';
+import {
+  chatWithFallback,
+  getGeminiClient,
+  getChatModelId,
+  isGeminiRateLimitError,
+  formatQuotaErrorMessage,
+} from '@/lib/gemini';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,36 +60,31 @@ export async function POST(request) {
     const dataBlock = JSON.stringify({ st: statsPayload, ex: samplePayload });
     const userContent = `DATA:${dataBlock}\n\nQUESTION:${userMsg}`;
 
-    const model = genAI.getGenerativeModel({
-      model: getChatModelId(),
-      systemInstruction: SYSTEM_PROMPT,
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 2048,
-      },
-    });
-
     const prior = toGeminiHistory(compactHistory);
-    let reply;
 
-    if (prior.length === 0) {
-      const result = await model.generateContent(userContent);
-      reply = result.response.text();
-    } else {
-      const chat = model.startChat({ history: prior });
-      const result = await chat.sendMessage(userContent);
-      reply = result.response.text();
-    }
+    const { result } = await chatWithFallback(
+      genAI,
+      {
+        systemInstruction: SYSTEM_PROMPT,
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 2048,
+        },
+        primaryModelId: getChatModelId(),
+      },
+      prior,
+      userContent
+    );
+
+    const reply = result.response.text();
 
     return Response.json({
       reply: reply || "I couldn't generate a response. Please try again.",
     });
   } catch (error) {
-    const raw = error?.message || String(error);
-    if (/429|RESOURCE_EXHAUSTED|quota|rate|limit|too many/i.test(raw)) {
+    if (isGeminiRateLimitError(error)) {
       return Response.json({
-        reply:
-          'The assistant hit an API quota or rate limit. Wait a few seconds and try again, or shorten your question.',
+        reply: formatQuotaErrorMessage(),
       });
     }
     console.error('Chat API error:', error);
