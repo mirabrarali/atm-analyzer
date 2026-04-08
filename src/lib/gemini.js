@@ -1,20 +1,19 @@
 /**
- * Google Gemini (AI Studio) — set GEMINI_API_KEY in Vercel / .env.local
- * https://ai.google.dev/gemini-api/docs/rate-limits
+ * Two-model strategy (Google AI Studio):
+ * 1) Gemma 3 27B IT — strong free-tier throughput (model id: gemma-3-27b-it). Override with GEMINI_PRIMARY_MODEL when Google publishes newer IDs (e.g. larger Gemma variants).
+ * 2) Gemini 2.5 Flash — reasoning + native JSON MIME for analysis when needed.
+ *
+ * Env: GEMINI_API_KEY (required). Optional: GEMINI_PRIMARY_MODEL, GEMINI_SMART_MODEL.
+ * Legacy: GEMINI_ANALYZE_MODEL / GEMINI_CHAT_MODEL still override the primary slot if GEMINI_PRIMARY_MODEL is unset.
+ *
+ * https://ai.google.dev/gemini-api/docs/models
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-/** Prefer 1.5 Flash first: free-tier often works when 2.0 shows limit:0. */
-export const DEFAULT_GEMINI_MODEL = 'gemini-1.5-flash';
-
-/** After primary (env or default); each model has its own quota bucket. */
-const MODEL_FALLBACK_ORDER = [
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-8b',
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
-];
+export const DEFAULT_PRIMARY_MODEL = 'gemma-3-27b-it';
+export const DEFAULT_SMART_MODEL = 'gemini-2.5-flash';
+export const DEFAULT_GEMINI_MODEL = DEFAULT_PRIMARY_MODEL;
 
 export function getGeminiApiKey() {
   return (
@@ -31,18 +30,25 @@ export function getGeminiClient() {
   return new GoogleGenerativeAI(key);
 }
 
+export function buildTwoModelChain() {
+  const first =
+    process.env.GEMINI_PRIMARY_MODEL?.trim() ||
+    process.env.GEMINI_ANALYZE_MODEL?.trim() ||
+    DEFAULT_PRIMARY_MODEL;
+  const second =
+    process.env.GEMINI_SMART_MODEL?.trim() ||
+    process.env.GEMINI_CHAT_MODEL?.trim() ||
+    DEFAULT_SMART_MODEL;
+  if (first === second) return [first];
+  return [first, second];
+}
+
 export function getAnalyzeModelId() {
-  return process.env.GEMINI_ANALYZE_MODEL?.trim() || DEFAULT_GEMINI_MODEL;
+  return buildTwoModelChain()[0];
 }
 
 export function getChatModelId() {
-  return process.env.GEMINI_CHAT_MODEL?.trim() || DEFAULT_GEMINI_MODEL;
-}
-
-export function buildModelChain(primaryModelId) {
-  const first = (primaryModelId || DEFAULT_GEMINI_MODEL).trim();
-  const rest = MODEL_FALLBACK_ORDER.filter((m) => m !== first);
-  return [...new Set([first, ...rest])];
+  return buildTwoModelChain()[0];
 }
 
 export function isGeminiRateLimitError(error) {
@@ -54,7 +60,7 @@ export function isGeminiRateLimitError(error) {
 export function isModelUnavailableError(error) {
   const status = error?.status ?? error?.statusCode;
   const msg = error?.message || String(error);
-  return status === 404 || /not found|invalid model|is not found|NOT_FOUND/i.test(msg);
+  return status === 404 || /not found|invalid model|is not found|NOT_FOUND|unsupported/i.test(msg);
 }
 
 function sleep(ms) {
@@ -76,15 +82,32 @@ export function parseRetryDelayMs(error) {
   return 0;
 }
 
-export async function generateContentWithFallback(
-  genAI,
-  { systemInstruction, generationConfig, primaryModelId },
-  userText
-) {
-  const chain = buildModelChain(primaryModelId);
+/** JSON MIME is supported on Gemini-family models; Gemma uses plain text + strict JSON in the prompt. */
+export function buildAnalyzeGenerationConfig(modelId) {
+  const id = String(modelId);
+  const base = {
+    temperature: 0.1,
+    maxOutputTokens: 8192,
+  };
+  if (id.startsWith('gemini-')) {
+    return { ...base, responseMimeType: 'application/json' };
+  }
+  return base;
+}
+
+export function buildChatGenerationConfig() {
+  return {
+    temperature: 0.2,
+    maxOutputTokens: 2048,
+  };
+}
+
+export async function generateContentWithFallback(genAI, { systemInstruction }, userText) {
+  const chain = buildTwoModelChain();
   let lastError;
 
   for (const modelId of chain) {
+    const generationConfig = buildAnalyzeGenerationConfig(modelId);
     const model = genAI.getGenerativeModel({
       model: modelId,
       systemInstruction,
@@ -98,24 +121,23 @@ export async function generateContentWithFallback(
     } catch (e) {
       lastError = e;
       if (isModelUnavailableError(e)) {
-        console.warn(`[Gemini] ${modelId} unavailable — trying next model`);
+        console.warn(`[Gemini] ${modelId} unavailable — using fallback`);
         continue;
       }
       if (!isGeminiRateLimitError(e)) throw e;
       const wait = parseRetryDelayMs(e);
       if (wait > 0) {
-        console.warn(`[Gemini] ${modelId} 429 — waiting ${wait}ms then retry once`);
         await sleep(Math.min(wait, 60_000));
         try {
           const result = await attempt();
           return { result, modelId };
         } catch (e2) {
           lastError = e2;
-          if (isModelUnavailableError(e2)) break;
+          if (isModelUnavailableError(e2)) continue;
           if (!isGeminiRateLimitError(e2)) throw e2;
         }
       }
-      console.warn(`[Gemini] ${modelId} quota/rate limit — trying next model`);
+      console.warn(`[Gemini] ${modelId} rate-limited — using fallback`);
     }
   }
 
@@ -132,13 +154,9 @@ function buildFlatChatPrompt(systemInstruction, priorHistory, userContent) {
   return lines.join('\n');
 }
 
-export async function chatWithFallback(
-  genAI,
-  { systemInstruction, generationConfig, primaryModelId },
-  priorHistory,
-  userContent
-) {
-  const chain = buildModelChain(primaryModelId);
+export async function chatWithFallback(genAI, { systemInstruction }, priorHistory, userContent) {
+  const chain = buildTwoModelChain();
+  const generationConfig = buildChatGenerationConfig();
   let lastError;
 
   const tryModel = async (modelId, useFlat) => {
@@ -168,16 +186,14 @@ export async function chatWithFallback(
       if (isModelUnavailableError(e)) continue;
       if (!isGeminiRateLimitError(e)) throw e;
       const wait = parseRetryDelayMs(e);
-      if (wait > 0) {
-        await sleep(Math.min(wait, 60_000));
-        try {
-          const result = await tryModel(modelId, false);
-          return { result, modelId };
-        } catch (e2) {
-          lastError = e2;
-          if (isModelUnavailableError(e2)) break;
-          if (!isGeminiRateLimitError(e2)) throw e2;
-        }
+      if (wait > 0) await sleep(Math.min(wait, 60_000));
+      try {
+        const result = await tryModel(modelId, false);
+        return { result, modelId };
+      } catch (e2) {
+        lastError = e2;
+        if (isModelUnavailableError(e2)) continue;
+        if (!isGeminiRateLimitError(e2)) throw e2;
       }
     }
   }
@@ -198,8 +214,8 @@ export async function chatWithFallback(
 
 export function formatQuotaErrorMessage() {
   return (
-    'Gemini API quota was exceeded (429) for every model tried. ' +
-    'Check https://ai.google.dev/gemini-api/docs/rate-limits — enable billing or a higher quota in Google AI Studio / Cloud. ' +
-    'Optional: set GEMINI_ANALYZE_MODEL=gemini-1.5-flash and GEMINI_CHAT_MODEL=gemini-1.5-flash.'
+    'Both configured models (Gemma primary + Gemini 2.5 Flash fallback) failed with quota or rate limits. ' +
+    'See https://ai.google.dev/gemini-api/docs/rate-limits — enable billing or wait. ' +
+    'Env: GEMINI_PRIMARY_MODEL, GEMINI_SMART_MODEL.'
   );
 }

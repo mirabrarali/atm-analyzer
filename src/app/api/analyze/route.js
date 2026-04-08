@@ -3,7 +3,6 @@ import { compactRowsForAnalysis } from '@/lib/analysisPayload';
 import {
   generateContentWithFallback,
   getGeminiClient,
-  getAnalyzeModelId,
   isGeminiRateLimitError,
   formatQuotaErrorMessage,
 } from '@/lib/gemini';
@@ -34,7 +33,7 @@ function aggregateTransactions(rows) {
   };
 }
 
-const SYSTEM_PROMPT = `You are a bank ATM data analyst. Reply with ONLY valid JSON (no markdown, no code fences).
+const SYSTEM_PROMPT = `You are a bank ATM data analyst. Reply with ONLY valid JSON (no markdown, no code fences, no text before or after the object).
 
 Schema:
 {"summary":"string","totalTransactions":number,"totalVolume":number,"avgTransactionAmount":number,"peakHour":"string or N/A","anomalyCount":number,"anomalyDetails":["string"],"insights":["string"],"deepDiveNotes":["string"],"keyFindings":["string"],"riskLevel":"LOW"|"MEDIUM"|"HIGH","riskExplanation":"string","transactionBreakdown":[{"name":"string","value":number}],"statusBreakdown":[{"name":"string","value":number}],"recommendations":["string"]}
@@ -65,15 +64,7 @@ export async function POST(request) {
 
     const { result } = await generateContentWithFallback(
       genAI,
-      {
-        systemInstruction: SYSTEM_PROMPT,
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 8192,
-          responseMimeType: 'application/json',
-        },
-        primaryModelId: getAnalyzeModelId(),
-      },
+      { systemInstruction: SYSTEM_PROMPT },
       userPayload
     );
 

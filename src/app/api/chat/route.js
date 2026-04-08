@@ -2,7 +2,6 @@ import { shrinkTransactionsForChat, trimChatHistory } from '@/lib/chatContext';
 import {
   chatWithFallback,
   getGeminiClient,
-  getChatModelId,
   isGeminiRateLimitError,
   formatQuotaErrorMessage,
 } from '@/lib/gemini';
@@ -64,14 +63,7 @@ export async function POST(request) {
 
     const { result } = await chatWithFallback(
       genAI,
-      {
-        systemInstruction: SYSTEM_PROMPT,
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 2048,
-        },
-        primaryModelId: getChatModelId(),
-      },
+      { systemInstruction: SYSTEM_PROMPT },
       prior,
       userContent
     );
