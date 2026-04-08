@@ -1,9 +1,11 @@
 import Groq from 'groq-sdk';
 import { inferMajorityCurrency } from '@/lib/currencyFormat';
+import { compactRowsForAnalysis } from '@/lib/analysisPayload';
 
 export const dynamic = 'force-dynamic';
 
-const MODEL_ANALYZE = 'llama-3.3-70b-versatile';
+/** Prefer 8B when TPM limits are tight; override with ATM_ANALYZE_MODEL if needed. */
+const MODEL_ANALYZE = process.env.ATM_ANALYZE_MODEL || 'llama-3.1-8b-instant';
 
 function getApiKey() {
   return process.env.ATM_AI_API_KEY || process.env.GROQ_API_KEY;
@@ -33,6 +35,13 @@ function aggregateTransactions(rows) {
   };
 }
 
+const SYSTEM_PROMPT = `You are a bank ATM data analyst. Reply with ONLY valid JSON (no markdown).
+
+Schema:
+{"summary":"string","totalTransactions":number,"totalVolume":number,"avgTransactionAmount":number,"peakHour":"string or N/A","anomalyCount":number,"anomalyDetails":["string"],"insights":["string"],"deepDiveNotes":["string"],"keyFindings":["string"],"riskLevel":"LOW"|"MEDIUM"|"HIGH","riskExplanation":"string","transactionBreakdown":[{"name":"string","value":number}],"statusBreakdown":[{"name":"string","value":number}],"recommendations":["string"]}
+
+Rules: Copy totalTransactions,totalVolume,avgTransactionAmount,transactionBreakdown,statusBreakdown EXACTLY from serverComputedStats. Use dominantCurrency for money wording (not USD unless that code). Interpret patterns in deepDiveNotes and keyFindings.`;
+
 export async function POST(request) {
   try {
     const body = await request.json();
@@ -48,71 +57,36 @@ export async function POST(request) {
 
     const client = new Groq({ apiKey });
     const stats = aggregateTransactions(data);
-    const sample = Array.isArray(data) ? data.slice(0, 120) : [];
+    const compactSample = compactRowsForAnalysis(data, 40);
 
-    const systemPrompt = `You are a sophisticated AI Financial Analyst specializing in ATM transaction analysis for a major bank.
-Analyze the provided ATM transaction data and return a STRICT JSON response (no markdown, no code fences, just raw JSON).
-
-The JSON must follow this exact schema:
-{
-  "summary": "2-3 sentence executive summary of the data",
-  "totalTransactions": number,
-  "totalVolume": number,
-  "avgTransactionAmount": number,
-  "peakHour": "string or N/A",
-  "anomalyCount": number,
-  "anomalyDetails": ["string descriptions of notable anomalies or risks"],
-  "insights": ["string - 4 to 6 key business insights"],
-  "deepDiveNotes": ["string - 5 to 8 detailed analytical bullet points (patterns, concentrations, outliers, operational implications)"],
-  "keyFindings": ["string - 3 to 5 punchy executive takeaways"],
-  "riskLevel": "LOW" | "MEDIUM" | "HIGH",
-  "riskExplanation": "why this risk level",
-  "transactionBreakdown": [{"name": "type", "value": count}],
-  "statusBreakdown": [{"name": "status", "value": count}],
-  "recommendations": ["string - 3 to 5 actionable recommendations"]
-}
-
-RULES:
-- The object "serverComputedStats" in the user message is ground truth for row counts, totals, and frequency tables. Your totalTransactions, totalVolume, avgTransactionAmount, transactionBreakdown, and statusBreakdown MUST match serverComputedStats (you may restate them).
-- Monetary fields are in the ISO 4217 currency given by serverComputedStats.dominantCurrency (e.g. OMR, USD). State that currency explicitly in summary and insights when discussing amounts — never assume USD.
-- deepDiveNotes and keyFindings must add interpretation beyond raw counts (e.g. concentration risk, failure clusters, amount distribution implications).
-- Be precise with numbers.`;
+    const userPayload = JSON.stringify({
+      fn: String(fileName || 'unknown').slice(0, 200),
+      serverComputedStats: stats,
+      sampleRowsCompact: compactSample,
+    });
 
     const chatCompletion = await client.chat.completions.create({
       messages: [
-        { role: 'system', content: systemPrompt },
-        {
-          role: 'user',
-          content: `File name: "${fileName || 'unknown'}"
-
-serverComputedStats (GROUND TRUTH — copy counts and totals from here):
-${JSON.stringify(stats)}
-
-Representative sample rows (for context only):
-${JSON.stringify(sample)}`,
-        },
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userPayload },
       ],
       model: MODEL_ANALYZE,
       temperature: 0.05,
-      max_tokens: 4096,
+      max_tokens: 2048,
       top_p: 1,
       stream: false,
     });
 
     const raw = chatCompletion.choices[0]?.message?.content || '{}';
 
-    // Try to extract JSON from the response
     let analysis;
     try {
-      // Try direct parse first
       analysis = JSON.parse(raw);
     } catch {
-      // Try to extract JSON from markdown code fences
       const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
       if (jsonMatch) {
         analysis = JSON.parse(jsonMatch[1].trim());
       } else {
-        // Try to find JSON object in the text
         const braceMatch = raw.match(/\{[\s\S]*\}/);
         if (braceMatch) {
           analysis = JSON.parse(braceMatch[0]);
@@ -124,9 +98,20 @@ ${JSON.stringify(sample)}`,
 
     return Response.json({ analysis });
   } catch (error) {
+    const msg = error?.message || String(error);
+    const is413 = /413|rate_limit|TPM|tokens/i.test(msg);
     console.error('Analysis API Error:', error);
+    if (is413) {
+      return Response.json(
+        {
+          error:
+            'The analysis request is too large for the current AI quota. Try a shorter file, fewer rows, or wait a minute and retry. The dashboard still shows charts from your data.',
+        },
+        { status: 503 }
+      );
+    }
     return Response.json(
-      { error: `Analysis failed: ${error.message}` },
+      { error: `Analysis failed: ${msg}` },
       { status: 500 }
     );
   }
